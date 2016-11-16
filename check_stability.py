@@ -353,6 +353,57 @@ def get_files_changed():
             for item in files[:-1].split("\0")]
 
 
+def get_affected_testfiles(files_changed):
+    affected_testfiles = []
+    # FIXME: treat ".xml" files as test files? or support files? or both? or neither?
+    testfile_extensions = [".html", ".htm", ".xhtml", ".xht", ".xml", ".svg"]
+    supportfile_extensions = [".js", ".json"]
+    for changedfile_pathname in files_changed:
+        # Skip any changed file that is actually a test file.
+        if os.path.splitext(changedfile_pathname)[1] in testfile_extensions:
+            continue
+        # Skip any changed file that is not a support file.
+        if os.path.splitext(changedfile_pathname)[1] not in supportfile_extensions:
+            continue
+        # We have a changed file that is a support file.
+        supportfile_name = os.path.basename(changedfile_pathname)
+        travis_root = os.path.join(os.path.abspath(os.curdir), "w3c", "web-platform-tests")
+        repo_path = changedfile_pathname[len(travis_root):]
+        os.path.normpath(repo_path)
+        path_components = repo_path.split(os.sep)[1:]
+        basedir = None
+        if len(path_components) == 2:
+            # Parent of this changed support file is a top-level subdir.
+            basedir = path_components[0]
+        elif len(path_components) > 2:
+            # This changed support file some number of subdirs down. So as
+            # the directory we walk to look for test files in, we use the
+            # parent directory of the directory this changed file is in.
+            basedir = os.path.dirname(os.path.dirname(repo_path))[1:]
+        else:
+            # This changed support file is in the repo root, so skip it
+            # (because it's not part of any test).
+            continue
+        for root, dirs, fnames in os.walk(os.path.join(travis_root, basedir)):
+            # Walk basedir looking for test files containing the name of the
+            # changed support file, and add those to affected_files.
+            for fname in fnames:
+                testfile_name = os.path.join(travis_root, root, fname)
+                # Skip any file that's already in files_changed.
+                if testfile_name in files_changed:
+                    continue
+                # Skip any file that's not a test file.
+                if os.path.splitext(testfile_name)[1] not in testfile_extensions:
+                    continue
+                if not os.path.isfile(testfile_name):
+                    continue
+                with open(testfile_name, "r") as fh:
+                    file_contents = fh.read()
+                    if supportfile_name in file_contents:
+                        affected_testfiles.append(testfile_name)
+    return affected_testfiles
+
+
 def wptrunner_args(root, files_changed, iterations, browser):
     parser = wptcommandline.create_parser([browser.product])
     args = vars(parser.parse_args([]))
@@ -538,6 +589,10 @@ def main():
         do_delayed_imports()
 
         logger.debug("Files changed:\n%s" % "".join(" * %s\n" % item for item in files_changed))
+
+        affected_testfiles = get_affected_testfiles(files_changed)
+        files_changed.extend(affected_testfiles)
+
 
         browser = browser_cls(args.gh_token)
 
